@@ -1,12 +1,7 @@
 torch
 torchvision
+pymupdf
+easyocr
 numpy
-pandas
-Pillow
+pillow
 matplotlib
-scikit-learn
-seaborn
-tqdm
-pytesseract
-pdf2image
-PyMuPDF

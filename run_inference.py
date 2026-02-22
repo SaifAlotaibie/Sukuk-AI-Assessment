@@ -1,31 +1,27 @@
-"""
-Standalone inference script for Sukuk document page classification.
-
-Hybrid approach: EfficientNet-B0 CNN (65%) + Arabic OCR title matching (35%).
-
-Usage:
-    1. Set FILE_PATH below to the path of your PDF or image file.
-    2. Run:  python run_inference.py
-"""
-
 # ============================================================
-# SET YOUR FILE PATH HERE
-# ============================================================
-FILE_PATH = "PUT_YOUR_FILE_PATH_HERE"
+# Sukuk Hybrid Inference (Cross-Platform Version)
+# EfficientNet-B0 + EasyOCR + PyMuPDF
 # ============================================================
 
-import re
-import sys
-from pathlib import Path
-
+import fitz
+import easyocr
 import numpy as np
+import re
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-from PIL import Image
 from torchvision import models, transforms
+from PIL import Image
+import io
+import matplotlib.pyplot as plt
 
-CLASSES = [
+# =========================
+# CONFIG
+# =========================
+
+PDF_PATH = "" ## PUT YOUR PDF PATH HERE
+MODEL_PATH = "best_sukuk_model.pth"
+
+classes = [
     "Financial Sheets",
     "Independent Auditor's Report",
     "Notes (Tabular)",
@@ -34,64 +30,67 @@ CLASSES = [
 ]
 
 IMG_SIZE = 384
-
 W_CNN = 0.65
 W_OCR = 0.35
 
-MODEL_PATH = Path(__file__).resolve().parent / "models" / "best_sukuk_model.pth"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 
 inference_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
+    )
 ])
 
+# =========================
+# LOAD MODEL
+# =========================
 
-def load_model(model_path: Path, device: torch.device) -> nn.Module:
-    model = models.efficientnet_b0(weights=None)
-    model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(CLASSES))
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    model = model.to(device)
-    model.eval()
-    return model
+model = models.efficientnet_b0(weights=None)
+model.classifier[1] = nn.Linear(
+    model.classifier[1].in_features,
+    len(classes)
+)
 
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+model.to(device)
+model.eval()
 
-def clean_text(text: str) -> str:
+# =========================
+# EasyOCR
+# =========================
+
+reader = easyocr.Reader(['ar'], gpu=torch.cuda.is_available())
+
+def clean_text(text):
     text = text.replace("\n", " ")
-    text = text.replace("\u0640", "")
+    text = text.replace("ـ", "")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-
-def ocr_read_title(img: Image.Image):
-    import pytesseract
+def ocr_read_title(img):
 
     width, height = img.size
     cropped = img.crop((0, 0, width, int(height * 0.39)))
 
-    data = pytesseract.image_to_data(
-        cropped, lang="ara", output_type=pytesseract.Output.DICT
-    )
+    result = reader.readtext(np.array(cropped))
+
+    if len(result) == 0:
+        return "", 0, None
 
     words = []
     confidences = []
 
-    for i in range(len(data["text"])):
-        word = data["text"][i].strip()
-        conf = int(data["conf"][i])
-        if word != "" and conf > 0:
-            words.append(word)
-            confidences.append(conf)
+    for bbox, text, conf in result:
+        words.append(text)
+        confidences.append(conf)
 
-    if len(confidences) == 0:
-        return "", 0, None
-
-    avg_conf = np.mean(confidences)
+    avg_conf = np.mean(confidences) * 100
     full_text = clean_text(" ".join(words))
-
     title_part = full_text[:150]
 
     if "تقرير المراجع المستقل" in title_part:
@@ -114,99 +113,71 @@ def ocr_read_title(img: Image.Image):
 
     return full_text, avg_conf, None
 
+# =========================
+# PDF LOADER (PyMuPDF)
+# =========================
 
-def load_pages(file_path: Path) -> list:
-    suffix = file_path.suffix.lower()
+def load_pdf_pages(pdf_path, dpi=200):
+    doc = fitz.open(pdf_path)
+    pages = []
 
-    if suffix == ".pdf":
-        from pdf2image import convert_from_path
+    zoom = dpi / 72
+    mat = fitz.Matrix(zoom, zoom)
 
-        print(f"Converting PDF to images (200 DPI)...")
-        pages = convert_from_path(str(file_path), dpi=200)
-        print(f"  {len(pages)} pages extracted.")
-        return pages
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        pages.append(img)
 
-    elif suffix in (".jpg", ".jpeg", ".png"):
-        img = Image.open(file_path).convert("RGB")
-        return [img]
+    return pages
 
-    else:
-        print(f"Error: Unsupported file type '{suffix}'. Use PDF, JPG, JPEG, or PNG.")
-        sys.exit(1)
+# =========================
+# RUN INFERENCE
+# =========================
 
+pages = load_pdf_pages(PDF_PATH, dpi=200)
 
-def main():
-    file_path = Path(FILE_PATH)
-    if not file_path.exists():
-        print(f"Error: File not found: {file_path}")
-        sys.exit(1)
+for i, img in enumerate(pages):
 
-    if not MODEL_PATH.exists():
-        print(f"Error: Model weights not found: {MODEL_PATH}")
-        sys.exit(1)
+    img_tensor = inference_transform(img).unsqueeze(0).to(device)
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-        else "cpu"
-    )
-    print(f"Device: {device}")
+    with torch.no_grad():
+        outputs = model(img_tensor)
+        cnn_probs = torch.softmax(outputs, dim=1)[0].cpu().numpy()
 
-    print(f"Loading model from {MODEL_PATH}...")
-    model = load_model(MODEL_PATH, device)
-    print("Model loaded.\n")
+    text, ocr_conf, detected_type = ocr_read_title(img)
+    conf_factor = ocr_conf / 100.0
 
-    pages = load_pages(file_path)
+    ocr_scores = np.zeros(len(classes))
 
-    predictions = []
+    if detected_type == "auditor":
+        ocr_scores[classes.index("Independent Auditor's Report")] = conf_factor
 
-    for i, page in enumerate(pages):
-        img = page.convert("RGB")
+    elif detected_type == "financial":
+        ocr_scores[classes.index("Financial Sheets")] = conf_factor
 
-        img_tensor = inference_transform(img).unsqueeze(0).to(device)
+    elif detected_type == "notes":
+        ocr_scores[classes.index("Notes (Text)")] = 0.5 * conf_factor
+        ocr_scores[classes.index("Notes (Tabular)")] = 0.5 * conf_factor
 
-        with torch.no_grad():
-            outputs = model(img_tensor)
-            cnn_probs = torch.softmax(outputs, dim=1)[0].cpu().numpy()
+        mask = np.zeros(len(classes))
+        mask[classes.index("Notes (Text)")] = 1
+        mask[classes.index("Notes (Tabular)")] = 1
+        cnn_probs = cnn_probs * mask
 
-        text, ocr_conf, detected_type = ocr_read_title(img)
-        conf_factor = ocr_conf / 100.0
+    final_scores = (W_CNN * cnn_probs) + (W_OCR * ocr_scores)
+    final_idx = np.argmax(final_scores)
+    predicted_label = classes[final_idx]
 
-        ocr_scores = np.zeros(len(CLASSES))
+    print(f"\nPage {i+1}")
+    print("OCR:", detected_type, "| conf:", round(ocr_conf,1))
+    print("CNN after mask:", dict(zip(classes, np.round(cnn_probs,3))))
+    print("FINAL:", dict(zip(classes, np.round(final_scores,3))))
+    print("Prediction:", predicted_label)
 
-        if detected_type == "auditor":
-            ocr_scores[CLASSES.index("Independent Auditor's Report")] = conf_factor
-
-        elif detected_type == "financial":
-            ocr_scores[CLASSES.index("Financial Sheets")] = conf_factor
-
-        elif detected_type == "notes":
-            ocr_scores[CLASSES.index("Notes (Text)")] = 0.5 * conf_factor
-            ocr_scores[CLASSES.index("Notes (Tabular)")] = 0.5 * conf_factor
-
-            mask = np.zeros(len(CLASSES))
-            mask[CLASSES.index("Notes (Text)")] = 1
-            mask[CLASSES.index("Notes (Tabular)")] = 1
-            cnn_probs = cnn_probs * mask
-
-        final_scores = (W_CNN * cnn_probs) + (W_OCR * ocr_scores)
-        final_idx = np.argmax(final_scores)
-        predicted_label = CLASSES[final_idx]
-
-        predictions.append(predicted_label)
-
-        print(f"\nPage {i + 1}")
-        print("OCR:", detected_type, "| conf:", round(ocr_conf, 1))
-        print("CNN after mask:", dict(zip(CLASSES, np.round(cnn_probs, 3))))
-        print("FINAL:", dict(zip(CLASSES, np.round(final_scores, 3))))
-        print("Prediction:", predicted_label)
-
-        plt.figure(figsize=(6, 8))
-        plt.imshow(img)
-        plt.title(predicted_label)
-        plt.axis("off")
-        plt.show()
-
-
-if __name__ == "__main__":
-    main()
+    plt.figure(figsize=(6,8))
+    plt.imshow(img)
+    plt.title(predicted_label)
+    plt.axis("off")
+    plt.show()

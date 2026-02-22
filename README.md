@@ -1,10 +1,6 @@
 # Sukuk AI Assessment
 
-Automated classification of Arabic financial statement pages using a hybrid deep learning and OCR approach.
-
-## Project Overview
-
-Financial institutions publish regulatory documents as multi-page PDFs containing distinct section types. Manual sorting of these pages is time-consuming and error-prone. This project builds an automated page classifier that assigns each page to one of five categories:
+Hybrid CNN + EasyOCR classifier for Arabic financial statement pages. Each page of a multi-page PDF is classified into one of five categories using a fine-tuned EfficientNet-B0 combined with Arabic OCR title detection and weighted score fusion.
 
 | Class | Description |
 |---|---|
@@ -14,115 +10,78 @@ Financial institutions publish regulatory documents as multi-page PDFs containin
 | Notes (Text) | Footnotes containing narrative text |
 | Other Pages | Cover pages, table of contents, other non-financial content |
 
-The final model combines a fine-tuned EfficientNet-B0 CNN with rule-based Arabic OCR title detection, using weighted score fusion to produce the final prediction.
-
-## Dataset Summary
-
-- **Source**: 30 Arabic financial statement PDFs
-- **Total pages**: 1,179 labeled page images
-- **Labeling**: Manual, one-by-one using an interactive labeling script
-- **Splitting strategy**: Document-level split (entire PDFs assigned to one set, no page leakage)
-  - Train: 740 pages (20 PDFs)
-  - Validation: 219 pages (5 PDFs)
-  - Test: 220 pages (5 PDFs)
-- **Class distribution** (imbalanced):
-  - Notes (Tabular): 547
-  - Notes (Text): 330
-  - Financial Sheets: 125
-  - Independent Auditor's Report: 111
-  - Other Pages: 66
-
-## Project Pipeline
+## Project Structure
 
 ```
-PDF Documents
-    |
-    v
-PDF-to-Image Conversion (200 DPI)
-    |
-    v
-Manual Page Labeling (1-5 per image)
-    |
-    v
-Exploratory Data Analysis (dimensions, brightness, class balance)
-    |
-    v
-Document-Level Train / Val / Test Split
-    |
-    v
-Baseline Training (EfficientNet-B0, IMG_SIZE=224)
-    |
-    v
-Hybrid Model Training (EfficientNet-B0, IMG_SIZE=384, OCR fusion)
-    |
-    v
-Final Inference (CNN + Arabic OCR + Logical Masking + Weighted Fusion)
+Sukuk-AI-Assessment/
+│
+├── data/
+│   ├── mini_labels.csv
+│   ├── train_doc_split.csv
+│   ├── val_doc_split.csv
+│   ├── test_doc_split.csv
+│   └── pages_raw/              # Page images (JPG, 200 DPI)
+│
+├── notebooks/
+│   ├── EDA_visual_analysis.ipynb
+│   ├── EDA_LABELED_DATA.ipynb
+│   ├── DOCUMENT_LEVEL_AUDIT.ipynb
+│   ├── DOCUMENT_LEVEL_SPLIT.ipynb
+│   ├── BASELINE_TRAINING.ipynb
+│   └── best_model_OCREFF.ipynb  # Final hybrid model training + inference
+│
+├── scripts/
+│   ├── convert_pdf_to_image.py
+│   └── label_mini.py
+│
+├── run_inference.py             # Standalone inference script
+├── best_sukuk_model.pth         # Trained model weights
+├── requirements.txt
+└── README.md
 ```
 
-## Model Summary
-
-### Baseline
-
-- Architecture: EfficientNet-B0 (pretrained on ImageNet)
-- Input: 224x224 with pad-to-square preprocessing
-- Training: Two-stage (frozen backbone, then full fine-tuning)
-- Scheduler: CosineAnnealingLR with early stopping
-
-### Hybrid (Final Model)
-
-- Architecture: EfficientNet-B0 (pretrained on ImageNet)
-- Input: 384x384
-- Training: Full fine-tuning for 15 epochs at LR=3e-5 (AdamW)
-- Loss: CrossEntropyLoss with inverse-frequency class weights
-- OCR: Arabic title detection via pytesseract (top 39% crop, keyword matching)
-- Logical masking: When OCR detects "notes", non-notes CNN probabilities are zeroed out
-- Fusion: `final_scores = 0.65 * cnn_probs + 0.35 * ocr_scores`
-
-## How to Run Inference
-
-1. Install dependencies:
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Ensure `tesseract-ocr` and the Arabic language pack are installed:
+No system-level dependencies are required. No Tesseract. No Poppler. All OCR is handled by EasyOCR and all PDF rendering is handled by PyMuPDF — fully cross-platform (Windows, macOS, Linux).
 
-```bash
-# macOS
-brew install tesseract tesseract-lang
+## Model Placement
 
-# Ubuntu / Debian
-sudo apt-get install tesseract-ocr tesseract-ocr-ara
+The trained model weights file `best_sukuk_model.pth` must be placed in the **project root** (same directory as `run_inference.py`). This is the default location and requires no configuration.
 
-# For PDF support, also install poppler
-# macOS: brew install poppler
-# Ubuntu: sudo apt-get install poppler-utils
-```
+## How to Run
 
-3. Open `run_inference.py` and set the file path at the top of the script:
+1. Open `run_inference.py` and set the PDF path at the top of the script:
 
 ```python
-FILE_PATH = "/path/to/your/file.pdf"
+PDF_PATH = "path/to/your/file.pdf"
 ```
 
-4. Run:
+2. Run:
 
 ```bash
 python run_inference.py
 ```
 
-The script accepts PDF files (converted to images at 200 DPI) or single image files (JPG, JPEG, PNG). For each page, it prints the predicted label and displays the image with the prediction as the title.
+For each page, the script prints the predicted label with debug information (OCR detection, CNN probabilities, fusion scores) and displays the page image with the prediction as the title.
 
-## Key Results
+## Model Summary
 
-- **Best Validation Macro F1**: 0.9678 (Epoch 14 of 15)
-- Test set evaluation was not executed in the saved notebook outputs.
+- **Architecture**: EfficientNet-B0 (pretrained on ImageNet, fine-tuned)
+- **Input**: 384 × 384
+- **OCR**: EasyOCR Arabic title detection (top 39% crop, keyword matching)
+- **Fusion**: `final_scores = 0.65 × cnn_probs + 0.35 × ocr_scores`
+- **Masking**: When OCR detects "notes", non-notes CNN probabilities are zeroed out
+- **Best Validation Macro F1**: 0.9678
 
-## Technical Highlights
+## Cross-Platform Note
 
-- Document-level splitting prevents data leakage between train/val/test sets
-- Inverse-frequency class weighting handles the imbalanced label distribution
-- Arabic OCR title matching provides a strong prior for structurally identifiable pages
-- Logical masking enforces domain constraints (notes-detected pages cannot be classified as non-notes)
-- Weighted fusion balances learned visual features with deterministic text signals
+This project requires **no system-level OCR or PDF tools**. Everything runs through Python packages:
+
+- **EasyOCR** for Arabic text recognition
+- **PyMuPDF** for PDF-to-image conversion
+
+Works on Windows, macOS, and Linux without any additional installation steps beyond `pip install -r requirements.txt`.

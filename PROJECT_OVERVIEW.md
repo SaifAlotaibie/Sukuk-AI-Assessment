@@ -13,9 +13,6 @@ Sukuk-AI-Assessment/
 |   |-- val_doc_split.csv        # Validation set (219 pages, 5 PDFs)
 |   |-- test_doc_split.csv       # Test set (220 pages, 5 PDFs)
 |
-|-- models/
-|   |-- best_sukuk_model.pth     # Saved weights (EfficientNet-B0, 5 classes)
-|
 |-- notebooks/
 |   |-- EDA_visual_analysis.ipynb     # Image dimension and pixel statistics
 |   |-- EDA_LABELED_DATA.ipynb        # Label distribution and per-class analysis
@@ -29,6 +26,7 @@ Sukuk-AI-Assessment/
 |   |-- label_mini.py            # Interactive page labeling tool
 |
 |-- run_inference.py             # Standalone hybrid inference script
+|-- best_sukuk_model.pth         # Saved weights (EfficientNet-B0, 5 classes)
 |-- requirements.txt             # Python dependencies
 |-- README.md                    # Project summary and usage instructions
 |-- PROJECT_OVERVIEW.md          # This file
@@ -84,8 +82,8 @@ Sukuk-AI-Assessment/
 Implemented in `ocr_read_title()` (defined in both the notebook and `run_inference.py`):
 
 1. Crop the top 39% of the page image
-2. Run `pytesseract.image_to_data` with `lang="ara"`
-3. Filter words with confidence > 0, compute average confidence
+2. Run EasyOCR with Arabic language (`['ar']`)
+3. Collect words and confidences from detection results
 4. Clean text (remove tatweel, normalize whitespace)
 5. Take the first 150 characters as the title region
 6. Match against six Arabic keyword phrases:
@@ -111,4 +109,4 @@ The inference pipeline combines CNN and OCR signals:
 
 ### Inference Script
 
-**run_inference.py** -- Standalone script. The user sets `FILE_PATH` at the top of the file and runs `python run_inference.py`. Supports PDF (converted at 200 DPI via `pdf2image`) and single images (JPG, JPEG, PNG). Loads model weights from `models/best_sukuk_model.pth`. Applies the full hybrid pipeline (CNN + OCR + masking + fusion) and displays each page with the predicted label.
+**run_inference.py** -- Standalone script. The user sets `PDF_PATH` at the top of the file and runs `python run_inference.py`. PDFs are converted to images at 200 DPI via PyMuPDF. Loads model weights from `best_sukuk_model.pth` in the project root. Applies the full hybrid pipeline (CNN + EasyOCR + masking + fusion) and displays each page with the predicted label.
